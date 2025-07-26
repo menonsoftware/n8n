@@ -1,70 +1,81 @@
-version: '3.8'
-
 volumes:
-  db_storage:
   n8n_storage:
-  redis_storage:
+  postgres_storage:
+  qdrant_storage:
+  proxy_storage:
+  cert_storage:
+  
+networks:
+  n8work:
 
-x-shared: &shared
-  restart: always
-  image: docker.n8n.io/n8nio/n8n
+x-n8n: &service-n8n
+  image: n8nio/n8n:latest
+  networks: ['n8work']
   environment:
     - DB_TYPE=postgresdb
     - DB_POSTGRESDB_HOST=postgres
-    - DB_POSTGRESDB_PORT=5432
-    - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
-    - EXECUTIONS_MODE=queue
-    - QUEUE_BULL_REDIS_HOST=redis
-    - QUEUE_HEALTH_CHECK_ACTIVE=true
-    - N8N_ENCRYPTION_KEY=${ENCRYPTION_KEY}
-    - N8N_HOST=${N8N_DOMAIN}
-    - N8N_PORT=5678
-    - N8N_BASIC_AUTH_ACTIVE=true
-    - N8N_BASIC_AUTH_USER=${N8N_USER}
-    - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
-    - TZ=Asia/Kolkata
-  volumes:
-    - n8n_storage:/home/node/.n8n
+    - DB_POSTGRESDB_USER=${POSTGRES_USER}
+    - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+    - N8N_PROXY_HOPS=1
+    - N8N_PROTOCOL=https
+    - VUE_APP_URL_BASE_API=https://${N8N_HOST}
+    - WEBHOOK_URL=https://${N8N_HOST}
+  links:
+    - postgres
+  depends_on:
+    postgres:
+      condition: service_healthy
 
 services:
-  postgres:
-    image: postgres:16
-    restart: always
+  https-portal:
+    image: 'jc21/nginx-proxy-manager:latest'
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '81:81'
+      - '443:443'
+    volumes:
+      - proxy_storage:/data
+      - cert_storage:/etc/letsencrypt
     environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-    volumes:
-      - db_storage:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+      INITIAL_ADMIN_EMAIL: ${NGINX_PROXY_MANAGER_EMAIL}
+      INITIAL_ADMIN_PASSWORD: ${NGINX_PROXY_MANAGER_PASSWORD}
+    networks: ['n8work']
 
-  redis:
-    image: redis:6-alpine
-    restart: always
+  postgres:
+    image: postgres:16-alpine
+    networks: ['n8work']
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_DB
     volumes:
-      - redis_storage:/data
+      - postgres_storage:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD-SHELL', 'pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
       interval: 5s
       timeout: 5s
       retries: 10
 
   n8n:
-    <<: *shared
-    ports:
-      - 5678:5678
+    <<: *service-n8n
+    container_name: n8n
+    restart: unless-stopped
+    volumes:
+      - n8n_storage:/home/node/.n8n
+      - ./n8n/backup:/backup
+      - ./shared:/data/shared
     depends_on:
-      redis:
-        condition: service_healthy
       postgres:
         condition: service_healthy
 
-  n8n-worker:
-    <<: *shared
-    command: worker
-    depends_on:
-      - n8n
+  qdrant:
+    image: qdrant/qdrant
+    container_name: qdrant
+    networks: ['n8work']
+    restart: unless-stopped
+    ports:
+      - 6333:6333
+    volumes:
+      - qdrant_storage:/qdrant/storage
