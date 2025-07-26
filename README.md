@@ -1,2 +1,2 @@
 # n8n
-n8n workflow with SSL, custom domain, Postgres and workers
+n8n workflow with SSL, custom domain, Postgres and qdrant
